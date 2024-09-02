@@ -1,0 +1,7 @@
+device: "/dev/ttyUSB3"
+baud_rate: 115200
+commands: {
+    ATI,
+    AT+CSQ,
+    AT+CREG?
+}
