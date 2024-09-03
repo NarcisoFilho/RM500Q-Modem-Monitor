@@ -1,5 +1,7 @@
-device: "/dev/ttyUSB3"
+device:/dev/ttyUSB3
 baud_rate: 115200
+interval:2000
+output_folder:./modem_data
 commands: {
     ATI,
     AT+CSQ,

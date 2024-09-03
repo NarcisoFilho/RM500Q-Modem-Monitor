@@ -1,3 +1,14 @@
+/**  RM500Q Modem Monitor
+ *      
+ *   This is program to gather data from a Quectel RM500Q-Gl modem. The read parameters can be passed 
+ * via a configuration file or informed when running the application. The data is requested to the modem
+ * via AT commands and are printed on the screen and stored in a csv file.   
+ *      
+ * 
+ *   @author Manoel Narciso Reis Soares Filho    
+ * 
+ */
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -6,10 +17,18 @@
 #include <termios.h>
 #include <errno.h>
 #include <ctype.h>
+#include <signal.h>
+#include <time.h>
+#include <sys/stat.h>
 
 // Default values
 #define DEFAULT_DEVICE "/dev/ttyUSB3"
 #define DEFAULT_BAUD_RATE 115200
+#define DEFAULT_INTERVAL 1000 // Default interval in milliseconds
+#define DEFAULT_OUTPUT_FOLDER "." // Default output folder is the current directory
+
+// Global variable to handle termination
+volatile sig_atomic_t running = 1;
 
 // Function prototypes
 int configure_serial_port(int fd, int baud_rate);
@@ -17,13 +36,20 @@ int send_at_command(int fd, const char *command);
 void flush_serial_port(int fd);
 int read_response(int fd, char *response, size_t max_len);
 int request_modem_property(int fd, const char *command, char *response, size_t max_len);
-void process_commands(int fd, char *commands[], int count);
-int read_config_file(const char *filename, char **device, int *baud_rate, char *commands[], int max_count);
+void process_commands(int fd, char *commands[], int count, FILE *csv_file);
+int read_config_file(const char *filename, char **device, int *baud_rate, char *commands[], int max_count, int *interval, char **output_folder);
 void to_lowercase(char *str);
+void trim_whitespace(char *str);
+void remove_surrounding_quotes(char *str);
+void signal_handler(int signum);
+FILE *create_csv_file(char *commands[], int count, const char *output_folder);
 
+// Main function
 int main(int argc, char *argv[]) {
     char *device = NULL;
     int baud_rate = DEFAULT_BAUD_RATE; // Default baud rate
+    int interval = DEFAULT_INTERVAL;   // Default interval in milliseconds
+    char *output_folder = DEFAULT_OUTPUT_FOLDER; // Default output folder
     int command_count = 0;
     char *commands[100]; // Adjust the size as needed
 
@@ -50,7 +76,7 @@ int main(int argc, char *argv[]) {
 
     if (file_mode) {
         // Read configuration from the file
-        int count = read_config_file(filename, &device, &baud_rate, commands, sizeof(commands) / sizeof(commands[0]));
+        int count = read_config_file(filename, &device, &baud_rate, commands, sizeof(commands) / sizeof(commands[0]), &interval, &output_folder);
         if (count < 0) {
             fprintf(stderr, "Error reading configuration from file '%s'\n", filename);
             free(device);
@@ -60,8 +86,6 @@ int main(int argc, char *argv[]) {
     }
 
     int fd = open(device, O_RDWR | O_NOCTTY | O_NDELAY);
-    // int fd = open("/dev/ttyUSB3", O_RDWR | O_NOCTTY | O_NDELAY);
-    printf(">>>>>>%s\n", device);
     if (fd == -1) {
         perror("open");
         free(device);
@@ -75,20 +99,39 @@ int main(int argc, char *argv[]) {
         return 1;
     }
 
-    // Process commands
-    if (command_count > 0) {
-        process_commands(fd, commands, command_count);
-    } else {
-        fprintf(stderr, "No AT commands provided.\n");
+    // Set up signal handling for graceful termination
+    signal(SIGINT, signal_handler);
+    signal(SIGTERM, signal_handler);
+
+    // Create the CSV file
+    FILE *csv_file = create_csv_file(commands, command_count, output_folder);
+    if (csv_file == NULL) {
+        close(fd);
+        free(device);
+        return 1;
     }
+
+    // Main loop to send commands at the specified interval
+    while (running) {
+        process_commands(fd, commands, command_count, csv_file);
+
+        // Sleep for the specified interval
+        usleep(interval * 1000); // Convert milliseconds to microseconds
+    }
+
+    // Close the CSV file
+    fclose(csv_file);
 
     // Close the serial port
     close(fd);
 
     // Free dynamically allocated memory
     free(device);
-    for (int i = 0; i < command_count; i++) {
-        free(commands[i]);
+    if (file_mode) {
+        for (int i = 0; i < command_count; i++) {
+            free(commands[i]);
+        }
+        free(output_folder);
     }
 
     return 0;
@@ -207,9 +250,19 @@ int request_modem_property(int fd, const char *command, char *response, size_t m
 }
 
 // Function to process a list of commands
-void process_commands(int fd, char *commands[], int count) {
+void process_commands(int fd, char *commands[], int count, FILE *csv_file) {
     char response[1024];
+    char *responses[count];
 
+    for (int i = 0; i < count; i++) {
+        responses[i] = malloc(1024); // Allocate memory for each response
+        if (responses[i] == NULL) {
+            perror("Error allocating memory for response");
+            return;
+        }
+    }
+
+    // Send each command and store responses
     for (int i = 0; i < count; i++) {
         const char *at_command = commands[i];
 
@@ -217,21 +270,40 @@ void process_commands(int fd, char *commands[], int count) {
         flush_serial_port(fd);
 
         // Send the AT command and get the response
-        if (request_modem_property(fd, at_command, response, sizeof(response)) != 0) {
+        if (request_modem_property(fd, at_command, responses[i], sizeof(response)) != 0) {
             fprintf(stderr, "Error processing command '%s'\n", at_command);
-            continue;
+            strcpy(responses[i], "ERROR"); // Indicate an error
         }
-
-        // Print the modem response
-        printf("Response to '%s':\n%s\n", at_command, response);
     }
+
+    // Get the current timestamp
+    time_t now = time(NULL);
+    struct tm *t = localtime(&now);
+    char timestamp[256];
+    snprintf(timestamp, sizeof(timestamp), "%04d-%02d-%02d %02d:%02d:%02d",
+             t->tm_year + 1900, t->tm_mon + 1, t->tm_mday,
+             t->tm_hour, t->tm_min, t->tm_sec);
+
+    // Print and write each response
+    printf("Timestamp: %s\n", timestamp);
+    fprintf(csv_file, "\"%s\"", timestamp);
+
+    for (int i = 0; i < count; i++) {
+        printf("Command: %s\nResponse: %s\n\n", commands[i], responses[i]);
+        fprintf(csv_file, ",\"%s\"", responses[i]);
+        free(responses[i]); // Free the memory after use
+    }
+
+    // Write a newline to the CSV file to finish the row
+    fprintf(csv_file, "\n");
 }
 
 // Function to read configuration from a file
-int read_config_file(const char *filename, char **device, int *baud_rate, char *commands[], int max_count) {
+int read_config_file(const char *filename, char **device, int *baud_rate, char *commands[], int max_count, int *interval, char **output_folder) {
     FILE *file = fopen(filename, "r");
     if (file == NULL) {
         perror("Error opening configuration file");
+        fprintf(stderr, "File path provided: %s\n", filename); // Additional debug info
         return -1;
     }
 
@@ -240,26 +312,51 @@ int read_config_file(const char *filename, char **device, int *baud_rate, char *
     int in_commands_block = 0;
     char command_buffer[1024] = {0}; // Buffer to accumulate commands across lines
 
+    // Default output folder
+    *output_folder = strdup(DEFAULT_OUTPUT_FOLDER);
+    if (*output_folder == NULL) {
+        perror("Error allocating memory for output folder");
+        fclose(file);
+        return -1;
+    }
+
     while (fgets(line, sizeof(line), file) != NULL) {
         // Remove trailing newline characters
         line[strcspn(line, "\r\n")] = '\0';
 
         // Convert to lowercase for case-insensitive comparison
-        to_lowercase(line);
+        char lower_line[256];
+        strncpy(lower_line, line, sizeof(lower_line));
+        lower_line[sizeof(lower_line) - 1] = '\0';
+        to_lowercase(lower_line);
 
-        if (strncmp(line, "device:", 7) == 0) {
+        if (strncmp(lower_line, "device:", 7) == 0) {
             free(*device);
-            *device = strdup(line + 7);
+            *device = strdup(line + 7); // Preserve the case of the device path
             if (*device == NULL) {
                 perror("Error allocating memory for device");
                 fclose(file);
                 return -1;
             }
-        } else if (strncmp(line, "baud_rate:", 10) == 0) {
+            trim_whitespace(*device);
+            remove_surrounding_quotes(*device);
+        } else if (strncmp(lower_line, "baud_rate:", 10) == 0) {
             *baud_rate = atoi(line + 10);
-        } else if (strncmp(line, "commands:", 9) == 0) {
+        } else if (strncmp(lower_line, "commands:", 9) == 0) {
             in_commands_block = 1; // Start reading commands block
             continue;
+        } else if (strncmp(lower_line, "interval:", 9) == 0) {
+            *interval = atoi(line + 9);
+        } else if (strncmp(lower_line, "output_folder:", 14) == 0) {
+            free(*output_folder);
+            *output_folder = strdup(line + 14);
+            if (*output_folder == NULL) {
+                perror("Error allocating memory for output folder");
+                fclose(file);
+                return -1;
+            }
+            trim_whitespace(*output_folder);
+            remove_surrounding_quotes(*output_folder);
         }
 
         if (in_commands_block) {
@@ -276,10 +373,10 @@ int read_config_file(const char *filename, char **device, int *baud_rate, char *
             char *cmd = strtok(command_buffer, ",");
             while (cmd != NULL) {
                 // Trim whitespace around commands
-                while (isspace((unsigned char)*cmd)) cmd++;
-                char *end = cmd + strlen(cmd) - 1;
-                while (end > cmd && isspace((unsigned char)*end)) end--;
-                end[1] = '\0';
+                trim_whitespace(cmd);
+
+                // Remove surrounding quotes if present
+                remove_surrounding_quotes(cmd);
 
                 // Store the command
                 commands[count] = strdup(cmd);
@@ -310,4 +407,73 @@ void to_lowercase(char *str) {
     for (char *p = str; *p; p++) {
         *p = tolower((unsigned char)*p);
     }
+}
+
+// Function to trim whitespace from the start and end of a string
+void trim_whitespace(char *str) {
+    char *end;
+
+    // Trim leading space
+    while (isspace((unsigned char)*str)) str++;
+
+    if (*str == 0)  // All spaces?
+        return;
+
+    // Trim trailing space
+    end = str + strlen(str) - 1;
+    while (end > str && isspace((unsigned char)*end)) end--;
+
+    // Null terminate after the last non-space character
+    *(end + 1) = '\0';
+}
+
+// Function to remove surrounding quotes from a string
+void remove_surrounding_quotes(char *str) {
+    size_t len = strlen(str);
+    if (len > 1 && str[0] == '\"' && str[len - 1] == '\"') {
+        // Shift the string to remove the quotes
+        memmove(str, str + 1, len - 1);
+        str[len - 2] = '\0';
+    }
+}
+
+// Function to create a CSV file with the current timestamp
+FILE *create_csv_file(char *commands[], int count, const char *output_folder) {
+    time_t now = time(NULL);
+    struct tm *t = localtime(&now);
+
+    // Create output folder if it doesn't exist
+    struct stat st = {0};
+    if (stat(output_folder, &st) == -1) {
+        if (mkdir(output_folder, 0700) != 0) {
+            perror("Error creating output folder");
+            return NULL;
+        }
+    }
+
+    // Format the filename based on the current date and time
+    char filename[256];
+    snprintf(filename, sizeof(filename), "%s/modem_data_%04d-%02d-%02d_%02d-%02d-%02d.csv",
+             output_folder,
+             t->tm_year + 1900, t->tm_mon + 1, t->tm_mday,
+             t->tm_hour, t->tm_min, t->tm_sec);
+
+    FILE *file = fopen(filename, "w");
+    if (file == NULL) {
+        perror("Error creating CSV file");
+        return NULL;
+    }
+
+    // Write the header row to the CSV file
+    fprintf(file, "Timestamp");
+    for (int i = 0; i < count; i++) {
+        fprintf(file, ",\"%s\"", commands[i]);
+    }
+    fprintf(file, "\n");
+    return file;
+}
+
+// Signal handler for graceful termination
+void signal_handler(int signum) {
+    running = 0;
 }
