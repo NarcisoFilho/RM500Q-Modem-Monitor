@@ -1,0 +1,9 @@
+device:/dev/ttyUSB2
+baud_rate: 115200
+interval:15000
+output_folder:./raw_data
+commands: {
+    AT+QENG="servingcell";
+    AT+QSCAN=3;
+}
+ping_ip: 10.0.3.1;

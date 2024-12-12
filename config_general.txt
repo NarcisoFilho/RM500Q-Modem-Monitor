@@ -1,0 +1,17 @@
+device:/dev/ttyUSB2
+baud_rate: 115200
+interval:1000
+output_folder:./raw_data
+commands: {
+    AT+CSQ;
+    AT+CREG?;
+    AT+COPS?;
+    AT+CGPADDR=1;
+    AT+CGQREQ;
+    AT+CGQMIN;
+    AT+WS46?;
+    AT+CEER;
+    AT+QNWINFO;
+    AT+QENG="servingcell";
+}
+ping_ip: 10.0.3.1;
