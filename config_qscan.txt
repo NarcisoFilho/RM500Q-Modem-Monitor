@@ -1,9 +1,10 @@
 device:/dev/ttyUSB2
 baud_rate: 115200
 interval:15000
-output_folder:./raw_data
+output_folder:./modem_data/raw_data
 commands: {
     AT+QENG="servingcell";
     AT+QSCAN=3;
 }
 ping_ip: 10.0.3.1;
+qscan_mode: active

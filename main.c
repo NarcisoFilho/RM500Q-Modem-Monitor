@@ -30,8 +30,7 @@
 #define MAX_OUTPUT_PING 1024
 #define READING_ERROR_LABEL "MODEM_READING_ERROR\n"
 #define DEFAULT_PING_IP "10.0.3.1"
-#define DEFAULT_TOLERANCE 5000
-//#define DEFAULT_TOLERANCE 99999999
+#define DEFAULT_BLOCKED_RESOURCE_TOLERANCE 5000
 
 typedef struct {
     unsigned long total_bytes_rx;
@@ -39,10 +38,9 @@ typedef struct {
 } DataUsage;
 
 volatile double last_delay = 0.0;
-
 volatile sig_atomic_t running = 1;
-
 int modem_number = -1;
+int reading_failing_tolerance = DEFAULT_BLOCKED_RESOURCE_TOLERANCE;
 
 int configure_serial_port(int fd, int baud_rate);
 int send_at_command(int fd, const char *command);
@@ -228,8 +226,8 @@ void flush_serial_port(int fd) {
 int read_response(int fd, char *response, size_t max_len) {
     size_t total_read = 0;
     int bytes_read;
-    //int max_blocks = 5000;
-    int max_blocks = DEFAULT_TOLERANCE;
+    int max_blocks = DEFAULT_BLOCKED_RESOURCE_TOLERANCE;
+
     while (total_read < max_len - 1) {
         bytes_read = read(fd, response + total_read, max_len - total_read - 1);
         if (bytes_read < 0) {
@@ -409,6 +407,10 @@ int read_config_file(const char *filename, char **device, int *baud_rate, char *
             }
             trim_whitespace(interface_name);
             remove_surrounding_quotes(*interface_name);
+        }else if (strncmp(lower_line, "qscan_mode:", 11) == 0) {
+            if(strcmp(strdup(line + 11), "active")){
+                reading_failing_tolerance = 99999999;
+            }
         }
 
 

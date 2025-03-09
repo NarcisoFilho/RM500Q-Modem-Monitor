@@ -15,7 +15,7 @@ typedef struct Point{
 } Point;
 
 
-int main(){
+int main(int argc, char *argv[]){
    Point point_list[POINTS_COUNT] = {
       {2, -3.62},      //9
       {17.60, 4.30}, //2
@@ -29,15 +29,27 @@ int main(){
       {8.8, 4.30},   //3   	
       {17.60,-3.62}, //1
    };
+   int loop_count = LOOP_COUNT;
+   int waiting_time = WAITING_TIME_S;
+
+
+   if(argc >= 2){
+      loop_count = atoi(argv[1]);
+   }
+   if(argc >= 3){
+      waiting_time = atoi(argv[2]);
+   }
+   if(argc >= 4){
+      //  = atoi(argv[2]);
+   }
    
    char command[250] = "";
-   for(int i = LOOP_COUNT; i ; i--){
+   for(int i = loop_count; i ; i--){
 	for(int j = 0; j < POINTS_COUNT; j++){		
 		sprintf(command,"ros2 action send_goal /navigate_to_pose nav2_msgs/action/NavigateToPose --feedback \"{pose: {header: {frame_id: 'map'}, pose: {position: {x: %.3f, y: %.3f, z: 0.0}, orientation: {x: 0.0, y: 0.0, z: 0.0, w: 1.0}}}}\"", point_list[j].x, point_list[j].y);
 		printf("%f ; %f\n", point_list[j].x, point_list[j].y);
-		//printf("%s\n", command);
       		system(command);      
-      		sleep(WAITING_TIME_S);
+      		sleep(waiting_time);
       	}
    }
 
